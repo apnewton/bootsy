@@ -250,6 +250,8 @@ public class Operator {
 				updateClusterConfiguration(master, kn);
 				// write keys and certificates
 				installKeysAndCertificates(master, kn);
+
+				// write cluster configuration
 				
 				new Connection(kubeAdapter, kn).raw(String.format(
 						"sudo docker pull %s", Version.image("bootsy-cmd")));
