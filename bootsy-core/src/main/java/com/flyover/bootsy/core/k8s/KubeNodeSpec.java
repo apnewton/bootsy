@@ -1,15 +1,19 @@
 /**
  * 
  */
-package com.flyover.bootsy.operator.k8s;
+package com.flyover.bootsy.core.k8s;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonInclude.Include;
 
 /**
  * @author mramach
  *
  */
+@JsonInclude(Include.NON_NULL)
 public class KubeNodeSpec extends Model {
 
 	private String type;
@@ -19,7 +23,9 @@ public class KubeNodeSpec extends Model {
 	private String state = "docker_install";
 	private Map<String, Object> instanceInfo = new LinkedHashMap<>();
 	private String checksum = "";
+	private String configurationChecksum = "";
 	private KubeNodePackageSpec packages = new KubeNodePackageSpec();
+	private SecuritySpec security = new SecuritySpec();
 
 	public String getType() {
 		return type;
@@ -83,6 +89,22 @@ public class KubeNodeSpec extends Model {
 
 	public void setChecksum(String checksum) {
 		this.checksum = checksum;
+	}
+
+	public String getConfigurationChecksum() {
+		return configurationChecksum;
+	}
+
+	public void setConfigurationChecksum(String configurationChecksum) {
+		this.configurationChecksum = configurationChecksum;
+	}
+
+	public SecuritySpec getSecurity() {
+		return security;
+	}
+
+	public void setSecurity(SecuritySpec security) {
+		this.security = security;
 	}
 	
 }

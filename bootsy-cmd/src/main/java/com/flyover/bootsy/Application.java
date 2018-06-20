@@ -25,13 +25,16 @@ public class Application {
 			.setDefault("node");
 		parser.addArgument("--api-server-endpoint")
 			.help("The api server endpoint to use during kubelet and kube-proxy initialization.")
-			.setDefault("http://127.0.0.1:8080");
+			.setDefault("https://127.0.0.1");
     	
     	MutuallyExclusiveGroup group = parser.addMutuallyExclusiveGroup();
     	
     	group.addArgument("--init")
     		.help("Initialize a Kubernetes master on the current host.")
     		.action(storeTrue());
+    	group.addArgument("--reconfigure")
+			.help("Reconfigure a Kubernetes master using the local bootsy.config.")
+			.action(storeTrue());
     	group.addArgument("--destroy")
 			.help("Destory a Kubernetes cluster on the current host.")
 			.action(storeTrue());
@@ -44,9 +47,17 @@ public class Application {
 				
 				new K8sMaster().init(namespace.getString("api_server_endpoint"));
 				
+			} else if(namespace.getBoolean("reconfigure") && "master".equals(namespace.getString("type"))) {
+				
+				new K8sMaster().update();
+				
 			} else if(namespace.getBoolean("init") && "node".equals(namespace.getString("type"))) {
 				
 				new K8sNode().init(namespace.getString("api_server_endpoint"));
+				
+			} else if(namespace.getBoolean("reconfigure") && "node".equals(namespace.getString("type"))) {
+				
+				new K8sNode().update(namespace.getString("api_server_endpoint"));
 				
 			} else if(namespace.getBoolean("destroy")) {
 				

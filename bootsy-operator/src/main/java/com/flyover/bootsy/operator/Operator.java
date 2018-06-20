@@ -3,24 +3,47 @@
  */
 package com.flyover.bootsy.operator;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.security.KeyFactory;
+import java.security.KeyPair;
 import java.security.MessageDigest;
+import java.security.PrivateKey;
+import java.security.cert.CertificateEncodingException;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import org.bouncycastle.asn1.x500.X500Name;
+import org.bouncycastle.asn1.x509.GeneralName;
+import org.bouncycastle.openssl.jcajce.JcaPEMWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.flyover.bootsy.core.ClusterConfig;
+import com.flyover.bootsy.core.SSL;
+import com.flyover.bootsy.core.Version;
+import com.flyover.bootsy.core.k8s.KubeNode;
+import com.flyover.bootsy.core.k8s.KubeNodeController;
+import com.flyover.bootsy.core.k8s.KubeNodeProvider;
+import com.flyover.bootsy.core.k8s.SecuritySpec;
+import com.flyover.bootsy.core.k8s.SecuritySpec.CertSpec;
 import com.flyover.bootsy.operator.k8s.KubeAdapter;
-import com.flyover.bootsy.operator.k8s.KubeNode;
-import com.flyover.bootsy.operator.k8s.KubeNodeController;
-import com.flyover.bootsy.operator.k8s.KubeNodeProvider;
 import com.flyover.bootsy.operator.provders.Provider;
 import com.flyover.bootsy.operator.ssh.Connection;
 
@@ -222,15 +245,22 @@ public class Operator {
 			String masterIpAddress = master.getSpec().getIpAddress();
 			
 			try {
+			
+				// write cluster configuration
+				updateClusterConfiguration(master, kn);
+				// write keys and certificates
+				installKeysAndCertificates(master, kn);
 				
-				new Connection(kubeAdapter, kn).raw("sudo docker pull portr.ctnr.ctl.io/markramach/bootsy-cmd:latest");
 				new Connection(kubeAdapter, kn).raw(String.format(
-						"sudo docker run -d --net=host -v /etc:/etc -v /root:/root -v /var/run:/var/run " + 
-						"portr.ctnr.ctl.io/markramach/bootsy-cmd:latest --init --type=node --api-server-endpoint=http://%s:8080", 
-							masterIpAddress));
+						"sudo docker pull %s", Version.image("bootsy-cmd")));
+				new Connection(kubeAdapter, kn).raw(String.format(
+						"sudo docker run --net=host -v /etc:/etc -v /root:/root -v /var/run:/var/run " + 
+						"%s --init --type=node --api-server-endpoint=https://%s", 
+							Version.image("bootsy-cmd"), masterIpAddress));
 			
 				// mark kubelet as ready
 				kn.getSpec().setState("configured");
+				kn.getSpec().setConfigurationChecksum(checksum(kubeAdapter.getKubeCluster("bootsy")));
 				// update the spec
 				kn = kubeAdapter.updateKubeNode(kn);
 				
@@ -238,6 +268,72 @@ public class Operator {
 				LOG.error("failed during kubelet installation {}", e.getMessage());
 				// stop node actions
 				return ;
+			}
+			
+		}
+		
+		// check to see if the kubelet has been initialized on the node.
+		if("reconfigure".equals(kn.getSpec().getState())) {
+			
+			LOG.debug("reconfiguring kubelet for KubeNode {}", kn.getMetadata().getName());
+			
+			// fetch master node ip address
+			KubeNode master = kubeAdapter.getKubeNodes(Collections.singletonMap("type", "master"))
+				.getItems().stream().findFirst().orElse(null);
+			
+			if(master == null) {
+				LOG.error("failed during kubelet installation, unable to determine kubernetes master node.");
+				// stop node actions
+				return ;
+			}
+			
+			String masterIpAddress = master.getSpec().getIpAddress();
+			
+			try {
+				
+				updateClusterConfiguration(master, kn);
+				
+				// write keys and certificates
+				if(!"master".equals(kn.getSpec().getType())) {
+					installKeysAndCertificates(master, kn);
+				}
+				
+				new Connection(kubeAdapter, kn).raw(String.format(
+						"sudo docker pull %s", Version.image("bootsy-cmd")));
+				
+				// mark kubelet as ready
+				kn.getSpec().setState("configured");
+				// update configuration checksum
+				kn.getSpec().setConfigurationChecksum(checksum(kubeAdapter.getKubeCluster("bootsy")));
+				// update the spec
+				kn = kubeAdapter.updateKubeNode(kn);
+				
+				new Connection(kubeAdapter, kn).raw(String.format(
+						"sudo docker run --net=host -v /etc:/etc -v /root:/root -v /var/run:/var/run " + 
+						"%s --reconfigure --type=%s --api-server-endpoint=https://%s", 
+							Version.image("bootsy-cmd"), kn.getSpec().getType(), masterIpAddress));
+			
+			} catch (Exception e) {
+				LOG.error("failed during kubelet reconfiguration {}", e.getMessage());
+				// stop node actions
+				return ;
+			}
+			
+		}
+
+		// if packages are not installed
+		if("configured".equals(kn.getSpec().getState())) {
+
+			String checksum = kn.getSpec().getConfigurationChecksum();
+			String systemChecksum = checksum(kubeAdapter.getKubeCluster("bootsy"));
+			
+			if(!systemChecksum.equals(checksum)) {	
+				
+				// mark kubelet as needing reconfiguration
+				kn.getSpec().setState("reconfigure");
+				// update the spec
+				kn = kubeAdapter.updateKubeNode(kn);
+				
 			}
 			
 		}
@@ -267,6 +363,161 @@ public class Operator {
 				return;
 			}
 			
+		}
+		
+	}
+
+	private void updateClusterConfiguration(KubeNode master, KubeNode kn) {
+		
+		try {
+			
+			ClusterConfig config = kubeAdapter.getKubeCluster("bootsy").getSpec().getConfig();
+					
+			new Connection(kubeAdapter, kn).raw("mkdir -p /etc/k8s");
+
+			// write cluster configuration to the target node
+			new Connection(kubeAdapter, kn).put("bootsy.config", 
+					new ObjectMapper().writeValueAsBytes(config), "/etc/k8s/bootsy.config");
+			
+		} catch (Exception e) {
+			throw new RuntimeException("failed to write cluster configuration to host: " + e.getMessage(), e);
+		}
+		
+	}
+	
+	private void installKeysAndCertificates(KubeNode master, KubeNode kn) {
+		
+		try {
+			
+			SecuritySpec security = master.getSpec().getSecurity();
+					
+			new Connection(kubeAdapter, kn).raw("mkdir -p /etc/k8s");
+
+			ByteArrayOutputStream out = new ByteArrayOutputStream();
+			
+			// ca key and certificate
+			PrivateKey caKey = privateKey(security.getCa().getKey());
+			
+			X509Certificate[] caCert = security.getCa().getCert().stream()
+					.map(this::certificate).toArray(X509Certificate[]::new);
+			
+			write(out, caCert);
+			new Connection(kubeAdapter, kn).put("ca.crt", out.toByteArray(), "/etc/k8s/ca.crt");
+			out.reset();
+
+			// server key and certificate
+			KeyPair serverKey = SSL.generateRSAKeyPair();
+			
+			X500Name subject = new X500Name(String.format("C=US, ST=WA, L=Seattle, O=bootsy, OU=bootsy, CN=%s", "192.168.253.1"));
+			
+			X509Certificate[] serverChain = SSL.generateSSLCertificate(caKey, caCert[0], serverKey, "192.168.253.1", subject,
+					new GeneralName(GeneralName.iPAddress, kn.getSpec().getIpAddress()),
+					new GeneralName(GeneralName.iPAddress, "127.0.0.1"));
+
+			CertSpec serverSpec = new CertSpec();
+			serverSpec.setKey(encode(serverKey));
+			serverSpec.setCert(Arrays.stream(serverChain).map(this::encode).collect(Collectors.toList()));
+			
+			kn.getSpec().getSecurity().setServer(serverSpec);
+			
+			// kubelet client certificate
+			KeyPair kubeletKey = SSL.generateRSAKeyPair();
+
+			subject = new X500Name(String.format("CN=system:node:%s, O=system:nodes", kn.getSpec().getIpAddress()));
+			
+			X509Certificate[] kubeletChain = SSL.generateClientCertificate(
+					caKey, caCert[0], kubeletKey, "192.168.253.1", subject);
+			
+			CertSpec kubeletSpec = new CertSpec();
+			kubeletSpec.setKey(encode(kubeletKey));
+			kubeletSpec.setCert(Arrays.stream(kubeletChain).map(this::encode).collect(Collectors.toList()));
+			
+			kn.getSpec().getSecurity().setKubelet(kubeletSpec);
+			
+			// kube-proxy client certificate
+			KeyPair kubeProxyKey = SSL.generateRSAKeyPair();
+			
+			subject = new X500Name(String.format("CN=system:kube-proxy, O=system:node-proxier"));
+			
+			X509Certificate[] kubeProxyChain = SSL.generateClientCertificate(
+					caKey, caCert[0], kubeProxyKey, "192.168.253.1", subject);
+			
+			CertSpec kubeProxySpec = new CertSpec();
+			kubeProxySpec.setKey(encode(kubeProxyKey));
+			kubeProxySpec.setCert(Arrays.stream(kubeProxyChain).map(this::encode).collect(Collectors.toList()));
+			
+			kn.getSpec().getSecurity().setKubeProxy(kubeProxySpec);
+
+			// write keys and certificates to the target node			
+			write(out, serverKey);
+			new Connection(kubeAdapter, kn).put("server.key", out.toByteArray(), "/etc/k8s/server.key");
+			out.reset();
+			
+			write(out, serverChain);
+			new Connection(kubeAdapter, kn).put("server.crt", out.toByteArray(), "/etc/k8s/server.crt");
+			out.reset();
+			
+			write(out, kubeletKey);
+			new Connection(kubeAdapter, kn).put("kubelet.key", out.toByteArray(), "/etc/k8s/kubelet.key");
+			out.reset();
+			
+			write(out, kubeletChain);
+			new Connection(kubeAdapter, kn).put("kubelet.crt", out.toByteArray(), "/etc/k8s/kubelet.crt");
+			out.reset();
+			
+			write(out, kubeProxyKey);
+			new Connection(kubeAdapter, kn).put("kube-proxy.key", out.toByteArray(), "/etc/k8s/kube-proxy.key");
+			out.reset();
+			
+			write(out, kubeProxyChain);
+			new Connection(kubeAdapter, kn).put("kube-proxy.crt", out.toByteArray(), "/etc/k8s/kube-proxy.crt");
+			
+		} catch (Exception e) {
+			throw new RuntimeException("failed to write security keys and certificates to host: " + e.getMessage(), e);
+		}
+		
+	}
+	
+	private String encode(KeyPair key) {
+		return Base64.getEncoder().encodeToString(key.getPrivate().getEncoded());
+	}
+	
+	private String encode(X509Certificate cert) {
+		
+		try {
+		
+			return Base64.getEncoder().encodeToString(cert.getEncoded());
+			
+		} catch (CertificateEncodingException e) {
+			throw new RuntimeException("failed to encode certificate", e);
+		}
+		
+	}
+	
+	private PrivateKey privateKey(String data) {
+		
+		try {
+			
+			KeyFactory keyFactory = KeyFactory.getInstance("RSA");
+			
+			return keyFactory.generatePrivate(new PKCS8EncodedKeySpec(Base64.getDecoder().decode(data)));
+			
+		} catch (Exception e) {
+			throw new RuntimeException("failed to load private key", e);
+		}
+		
+	}
+	
+	private X509Certificate certificate(String data) {
+		
+		try {
+			
+			CertificateFactory certFactory = CertificateFactory.getInstance("X.509");
+			
+			return (X509Certificate)certFactory.generateCertificate(new ByteArrayInputStream(Base64.getDecoder().decode(data)));
+			
+		} catch (CertificateException e) {
+			throw new RuntimeException("failed to load certificate", e);
 		}
 		
 	}
@@ -303,12 +554,12 @@ public class Operator {
 		
 	}
 	
-	private String checksum(List<String> values) {
+	private String checksum(Object o) {
 		
 		try {
 			
 			MessageDigest md = MessageDigest.getInstance("MD5");
-			values.forEach(n -> md.update(n.getBytes()));
+			md.update(new ObjectMapper().writeValueAsBytes(o));
 			String checksum = Base64.getUrlEncoder().encodeToString(md.digest());
 			
 			return checksum;
@@ -316,6 +567,22 @@ public class Operator {
 		} catch (Exception e) {
 			throw new RuntimeException("Failed to generate checksum.", e);
 		}
+		
+	}
+
+	public void write(OutputStream out, Object o) throws Exception {
+		write(out, new Object[]{o});
+	}
+	
+	public void write(OutputStream out, Object[] objects) throws Exception {
+		
+		JcaPEMWriter pem = new JcaPEMWriter(new OutputStreamWriter(out));
+
+		for (Object o : objects) {
+			pem.writeObject(o);
+		}
+		
+	    pem.close();
 		
 	}
 	

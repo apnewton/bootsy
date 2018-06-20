@@ -1,6 +1,111 @@
 apiVersion: v1
 kind: List
 items:
+- apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: bootsy
+    labels:
+      name: bootsy
+    namespace: bootsy
+- apiVersion: rbac.authorization.k8s.io/v1beta1
+  kind: ClusterRole
+  metadata:
+    name: bootsy
+    labels:
+      name: bootsy
+  rules:
+  - apiGroups:
+    - 'bootsy.flyover.com'
+    resources:
+    - kubeclusters
+    - kubenodes
+    - kubenodecontrollers
+    - kubenodeproviders
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+  - apiGroups:
+    - ''
+    resources:
+    - secrets
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+- apiVersion: rbac.authorization.k8s.io/v1beta1
+  kind: ClusterRoleBinding
+  metadata:
+    name: bootsy
+    labels:
+      name: bootsy
+  roleRef:
+    kind: ClusterRole
+    name: bootsy
+    apiGroup: rbac.authorization.k8s.io
+  subjects:
+  - kind: ServiceAccount
+    name: bootsy
+    namespace: bootsy
+- apiVersion: rbac.authorization.k8s.io/v1beta1
+  kind: Role
+  metadata:
+    name: bootsy
+    namespace: bootsy
+    labels:
+      name: bootsy
+  rules:
+  - apiGroups:
+    - 'bootsy.flyover.com'
+    resources:
+    - kubenodes
+    - kubenodecontrollers
+    - kubenodeproviders
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+  - apiGroups:
+    - ''
+    resources:
+    - secrets
+    verbs:
+    - get
+    - list
+    - watch
+    - create
+    - update
+    - patch
+    - delete
+- apiVersion: rbac.authorization.k8s.io/v1beta1
+  kind: RoleBinding
+  metadata:
+    name: bootsy
+    namespace: bootsy
+    labels:
+      name: bootsy
+  roleRef:
+    kind: Role
+    name: bootsy
+    apiGroup: rbac.authorization.k8s.io
+  subjects:
+  - kind: ServiceAccount
+    name: bootsy
+    namespace: bootsy
+      
 - apiVersion: apiextensions.k8s.io/v1beta1
   kind: CustomResourceDefinition
   metadata:
@@ -40,6 +145,39 @@ items:
       plural: kubenodeproviders
       singular: kubenodeproviders
       shortNames: [ knp ]
+- apiVersion: apiextensions.k8s.io/v1beta1
+  kind: CustomResourceDefinition
+  metadata:
+    name: kubeclusters.bootsy.flyover.com
+  spec:
+    scope: Cluster
+    group: bootsy.flyover.com
+    version: v1
+    names:
+      kind: KubeCluster
+      plural: kubeclusters
+      singular: kubeclusters
+      shortNames: [ kc ]
+      
+- apiVersion: bootsy.flyover.com/v1
+  kind: KubeNodeProvider
+  metadata:
+    name: bootstrap
+    namespace: ""
+  spec:
+    type: bootstrap  
+    
+- apiVersion: v1
+  kind: Secret
+  metadata:
+    name: "$auth_secret_name"
+    namespace: bootsy
+  type: Opaque
+  data:
+    username: cm9vdA==
+    publicKey: "$publicKey"
+    privateKey: "$privateKey"    
+      
 - apiVersion: bootsy.flyover.com/v1
   kind: KubeNode
   metadata:
@@ -48,14 +186,36 @@ items:
       type: master
   spec:
     type: master
+    state: configured
     provider: bootstrap
     ipAddress: "$ip_address"
     version: "$version"
+    security:
+      ca:
+        key: "$ca_key"
+        cert:
+        - "$ca_cert"
+      server:
+        key: "$server_key"
+        cert: 
+        - "$server_cert_0"
+        - "$server_cert_1"
+      kubelet:
+        key: "$kubelet_key"
+        cert: 
+        - "$kubelet_cert_0"
+        - "$kubelet_cert_1"
+      kubeProxy:
+        key: "$kube_proxy_key"
+        cert: 
+        - "$kube_proxy_cert_0"
+        - "$kube_proxy_cert_1"
     connector:
       type: ssh
       authSecret:
         namespace: bootsy
         name: "$auth_secret_name"
+        
 - apiVersion: v1
   kind: Namespace
   metadata:
@@ -77,7 +237,8 @@ items:
       spec:
         containers:
         - name: bootsy-operator
-          image: portr.ctnr.ctl.io/markramach/bootsy-operator:0.0.1-SNAPSHOT
+          image: "$image"
           imagePullPolicy: Always
           args:
-          - "--bootsy.k8s.endpoint=http://$ip_address:8080"
+          - "--bootsy.k8s.endpoint=https://192.168.253.1"
+        serviceAccountName: bootsy 
