@@ -339,7 +339,6 @@ public class K8sMaster extends K8sServer {
 			
 		} catch (Exception e) {
 			throw new RuntimeException("failed to write security keys and certificates to host", e);
-			
 		}
 		
 	}
@@ -361,7 +360,6 @@ public class K8sMaster extends K8sServer {
 			
 		} catch (Exception e) {
 			throw new RuntimeException("failed to write bootys cluster configuration to host", e);
-			
 		}
 		
 	}
@@ -661,7 +659,7 @@ public class K8sMaster extends K8sServer {
 		
 		ApiServer config = ctx.getClusterConfig().getApiserver();
 		config.setEtcdServers(String.format("https://%s:2379", ctx.getMasterIP()));
-		
+
 		CreateContainerResponse res = docker.createContainerCmd(Version.image("kube-base"))
 			.withNetworkMode("host")
 			.withPortBindings(PortBinding.parse("8080:8080"), PortBinding.parse("443:443"))
@@ -697,7 +695,7 @@ public class K8sMaster extends K8sServer {
 	}
 	
 	private void startEtcd(MasterContext ctx) {
-		
+
 		EtcdServer config = ctx.getClusterConfig().getEtcdserver();
 		config.setListenClientUrls(String.format("https://%s:2379,https://127.0.0.1:2379", ctx.getMasterIP()));
 		config.setAdvertiseClientUrls(String.format("https://%s:2379", ctx.getMasterIP()));
